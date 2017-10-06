@@ -398,31 +398,31 @@ function create_menu(gui, type) {
         put_menu.append(m.put.object = new gui.MenuItem({
             label: l("menu.object"),
             key: "1",
-            modifiers: cmd_or_ctrl,
+            modifiers: cmd_or_ctrl + "+shift",
             tooltip: l("menu.object_tt")
         }));
         put_menu.append(m.put.message = new gui.MenuItem({
             label: l("menu.msgbox"),
             key: "2",
-            modifiers: cmd_or_ctrl,
+            modifiers: cmd_or_ctrl + "+shift",
             tooltip: l("menu.msgbox_tt")
         }));
         put_menu.append(m.put.number = new gui.MenuItem({
             label: l("menu.number"),
             key: "3",
-            modifiers: cmd_or_ctrl,
+            modifiers: cmd_or_ctrl + "+shift",
             tooltip: l("menu.number_tt")
         }));
         put_menu.append(m.put.symbol = new gui.MenuItem({
             label: l("menu.symbol"),
             key: "4",
-            modifiers: cmd_or_ctrl,
+            modifiers: cmd_or_ctrl + "+shift",
             tooltip: l("menu.symbol_tt")
         }));
         put_menu.append(m.put.comment = new gui.MenuItem({
             label: l("menu.comment"),
             key: "5",
-            modifiers: cmd_or_ctrl,
+            modifiers: cmd_or_ctrl + "+shift",
             tooltip: l("menu.comment_tt")
         }));
         put_menu.append(m.put.dropdown = new gui.MenuItem({
