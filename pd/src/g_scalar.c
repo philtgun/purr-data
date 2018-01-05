@@ -785,12 +785,10 @@ static void scalar_group_configure(t_scalar *x, t_glist *owner,
 {
     t_gobj *y;
     char tagbuf[MAXPDSTRING];
-    sprintf(tagbuf, "draw%lx.%lx", (long unsigned int)gl,
+    sprintf(tagbuf, "dgroup%lx.%lx", (long unsigned int)gl,
         (long unsigned int)data);
     char parentbuf[MAXPDSTRING];
-    /* check if we're in an array-- really need to see if we can just
-       get rid of the different tag names for arrays... */
-    sprintf(parentbuf, "draw%lx.%lx",
+    sprintf(parentbuf, "dgroup%lx.%lx",
         (long unsigned int)parent,
         (long unsigned int)data);
     gui_start_vmess("gui_draw_configure_all", "xs",
@@ -1103,17 +1101,20 @@ static void scalar_vis(t_gobj *z, t_glist *owner, int vis)
 
 static void scalar_doredraw(t_gobj *client, t_glist *glist)
 {
-    scalar_vis(client, glist, 0);
-    scalar_vis(client, glist, 1);
-    if (glist_isselected(glist_getcanvas(glist), (t_gobj *)glist))
+    if (glist_isvisible(glist))
     {
-        //fprintf(stderr,"yes\n");
-        /* I still don't understand what this does... should probably
-           do some scalar gop tests to see if it is actually needed... */
-        //sys_vgui("pdtk_select_all_gop_widgets .x%lx %lx %d\n",
-        //    glist_getcanvas(glist), glist, 1);
+        scalar_vis(client, glist, 0);
+        scalar_vis(client, glist, 1);
+        if (glist_isselected(glist_getcanvas(glist), (t_gobj *)glist))
+        {
+            //fprintf(stderr,"yes\n");
+            /* I still don't understand what this does... should probably
+               do some scalar gop tests to see if it is actually needed... */
+            //sys_vgui("pdtk_select_all_gop_widgets .x%lx %lx %d\n",
+            //    glist_getcanvas(glist), glist, 1);
+        }
+        canvas_getscroll(glist_getcanvas(glist));
     }
-    canvas_getscroll(glist_getcanvas(glist));
 }
 
 void scalar_redraw(t_scalar *x, t_glist *glist)

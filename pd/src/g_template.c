@@ -363,12 +363,6 @@ static t_scalar *template_conformscalar(t_template *tfrom, t_template *tto,
         }
         else if (ds->ds_type == DT_ARRAY)
         {
-            t_symbol *arraytemplate = ds->ds_fieldtemplate;
-            if (arraytemplate == tfrom->t_sym ||
-                arraytemplate == tto->t_sym)
-            {
-                return 0;
-            }
             template_conformarray(tfrom, tto, conformaction, 
                 x->sc_vec[i].w_array);
         }
@@ -1520,7 +1514,6 @@ static void *draw_new(t_symbol *classsym, t_int argc, t_atom *argv)
 
     t_draw *x = (t_draw *)pd_new(draw_class);
 
-
     /* create a proxy for drawing/svg attributes */
     if (!(x->x_attr = (t_pd *)svg_new((t_pd *)x, type, argc, argv)))
     {
@@ -1745,8 +1738,15 @@ void svg_sendupdate(t_svg *x, t_canvas *c, t_symbol *s,
       need to experiment with gop scalars to make sure I'm not breaking
       anything */ 
     char tag[MAXPDSTRING];
-    int index = (array ?
-        ((((char *)data) - array->a_vec) / array->a_elemsize) : -1);
+    int index;
+    if (array)
+    {
+        int elemsize = array->a_elemsize;
+        if (!elemsize) elemsize = 1;
+        index = (((char *)data) - array->a_vec) / elemsize;
+    }
+    else
+        index = -1;
     if (x->x_type == gensym("g") || x->x_type == gensym("svg"))
     {
         sprintf(tag, "dgroup%lx.%lx",
@@ -2142,7 +2142,22 @@ void svg_register_events(t_gobj *z, t_canvas *c, t_scalar *sc,
     t_template *template, t_word *data, t_array *a)
 {
     t_svg *svg;
-    int index = (a ? ((((char *)data) - a->a_vec) / a->a_elemsize) : -1);
+    int index;
+    if (a)
+    {
+        int elemsize = a->a_elemsize; 
+        /* avoid divide-by-zero in case our elemsize is 0. Currently
+           there's no practical use case for an array of elements which
+           have zero size as there's no way to differentiate their
+           visualization. However if [draw array] changes in the future
+           to allow spacing out element groups or something like that,
+           we will have to revisit this workaround we're using to get
+           the element's index. */
+        if (!elemsize) elemsize = 1;
+        index = (((char *)data) - a->a_vec) / elemsize;
+    }
+    else
+        index = -1;
     char tagbuf[MAXPDSTRING];
     if (pd_class(&z->g_pd) == canvas_class)
     {
@@ -2162,9 +2177,8 @@ void svg_register_events(t_gobj *z, t_canvas *c, t_scalar *sc,
         sprintf(tagbuf, "draw%lx.%lx", (long unsigned int)z,
             (long unsigned int)data);
     }
-    else
+    else /* legacy drawing commands: curve, drawnumber, etc. */
     {
-        error("scalar: can't set event for unknown drawing command");
         return;
     }
     if (svg->x_events.e_mouseover.a_flag)
@@ -2231,8 +2245,6 @@ void svg_setattr(t_svg *x, t_symbol *s, t_int argc, t_atom *argv)
    the arguments in an existing [draw svg] object. */
 void svg_update_args(t_svg *x, t_symbol *s, int argc, t_atom *argv)
 {
-post("made it to args");
-if (argc) post("first arg is %s", atom_getsymbolarg(0, argc, argv)->s_name);
     /* "g" doesn't take any args, so check for "svg" arg */
     if (atom_getsymbolarg(0, argc, argv) == gensym("svg"))
     {
@@ -3608,8 +3620,8 @@ static void svg_getrectrect(t_svg *x, t_glist *glist,
     t_word *data, t_template *template, t_float basex, t_float basey,
     int *xp1, int *yp1, int *xp2, int *yp2)
 {
-    int width, height, xoff, yoff;
-    int x1, y1, x2, y2;
+    t_float width, height, xoff, yoff;
+    t_float x1, y1, x2, y2;
     x1 = y1 = 0x7fffffff;
     x2 = y2 = -0x7fffffff;
 
@@ -3673,10 +3685,10 @@ static void svg_getrectrect(t_svg *x, t_glist *glist,
         *xp2 = *yp2 = -0x7fffffff;
         return;
     }
-    *xp1 = x1;
-    *yp1 = y1;
-    *xp2 = x2;
-    *yp2 = y2;
+    *xp1 = (int)x1;
+    *yp1 = (int)y1;
+    *xp2 = (int)x2;
+    *yp2 = (int)y2;
 }
 
 void scalar_getinnersvgrect(t_gobj *z, t_glist *owner, t_word *data,
@@ -4471,35 +4483,48 @@ static int draw_click(t_gobj *z, t_glist *glist,
    But the one person I know who uses nested ds arrays hasn't asked for
    that, so let's see if we can just make it to the end of this software's
    life before that happens. */
-static void scalar_spelunkforword(t_scalar *x, t_symbol *s, int word_index,
-    t_array **array, t_word **data)
+static void scalar_spelunkforword(void* word_candidate, t_template* template,
+    t_word *data, int word_index, t_array **arrayp, t_word **datap)
 {
-    /* from glob_findinstance */
-    long obj = 0;
-    if (sscanf(s->s_name, "x%lx", &obj))
+    int i, nitems = template->t_n;
+    t_dataslot *datatypes = template->t_vec;
+    t_word *wp = data;
+    for (i = 0; i < nitems; i++, datatypes++, wp++)
     {
-        t_template *template = template_findbyname(x->sc_template);
-        if (!template)
+        if (datatypes->ds_type == DT_ARRAY &&
+            ((void *)wp->w_array) == (void *)word_candidate)
         {
-            pd_error(x, "scalar: template disappeared before notification "
-                        "from gui arrived");
+                /* Make sure we're in range, as the array could have been
+                   resized. In that case simply return */
+            if (word_index >= wp->w_array->a_n) return;
+            *arrayp = wp->w_array;
+            *datap = ((t_word *)(wp->w_array->a_vec +
+                word_index * wp->w_array->a_elemsize));
             return;
         }
-        int i, nitems = template->t_n;
-        t_dataslot *datatypes = template->t_vec;
-        t_word *wp = x->sc_vec;
-        for (i = 0; i < nitems; i++, datatypes++, wp++)
+    }
+        /* Now swoop through the headers again and recursively search
+           any arrays for nested data. We do this as a second step so
+           that toplevel arrays don't take a performance hit from deeply
+           nested arrays. (Probably not a big deal for click events, but
+           for complex data structures it could be noticeable for drag
+           events */
+    wp = data;
+    datatypes = template->t_vec;
+    for (i = 0; i < nitems; i++, datatypes++, wp++)
+        if (datatypes->ds_type == DT_ARRAY)
         {
-            if (datatypes->ds_type == DT_ARRAY &&
-                ((void *)wp->w_array) == (void *)obj &&
-                word_index < wp->w_array->a_n)
+            t_template* t = template_findbyname(wp->w_array->a_templatesym);
+            if (t)
             {
-                *array = wp->w_array;
-                *data = ((t_word *)(wp->w_array->a_vec +
-                    word_index * wp->w_array->a_elemsize));
+                int i, elemsize = wp->w_array->a_elemsize;
+                char *vec;
+                for(i = 0, vec = wp->w_array->a_vec; i < wp->w_array->a_n; i++)
+                    scalar_spelunkforword(word_candidate, t,
+                        (t_word *)(wp->w_array->a_vec + i * elemsize),
+                            word_index, arrayp, datap);
             }
         }
-    }
 }
 
 void draw_notify(t_canvas *x, t_symbol *s, int argc, t_atom *argv)
@@ -4527,11 +4552,24 @@ void draw_notify(t_canvas *x, t_symbol *s, int argc, t_atom *argv)
        or greater then that's what we have */
     if (index > -1)
     {
-        scalar_spelunkforword(sc, array_sym, index, &a, &data);
+        t_template *template = template_findbyname(sc->sc_template);
+        if (!template)
+        {
+            pd_error(sc, "scalar: template disappeared before notification "
+                        "from gui arrived");
+            return;
+        }
+        long word_candidate = 0; /* from glob_findinstance */
+        if (!sscanf(array_sym->s_name, "x%lx", &word_candidate))
+        {
+            pd_error(sc, "scalar: couldn't read array datum from GUI");
+            return;
+        }
+        scalar_spelunkforword((void *)word_candidate, template, sc->sc_vec,
+            index, &a, &data);
         if (!data)
         {
-            pd_error(x, "scalar: couldn't get array data for event "
-                        "callback");
+            pd_error(x, "scalar: couldn't get array data for event callback");
             return;
         }
     }
@@ -6691,77 +6729,17 @@ static void drawarray_getrect(t_gobj *z, t_glist *glist,
     t_word *data, t_template *template, t_float basex, t_float basey,
     int *xp1, int *yp1, int *xp2, int *yp2)
 {
-    t_drawarray *x = (t_drawarray *)z;
-    int width, height, xoff, yoff;
-    int x1, y1, x2, y2;
-    x1 = y1 = 0x7fffffff;
-    x2 = y2 = -0x7fffffff;
+    /* For now we just exclude drawarray from the bbox calculation.
+       Otherwise it gets too expensive and interferes with realtime audio.
 
-    t_float mtx1[3][3] = { {1, 0, 0}, {0, 1, 0}, {0, 0, 1} };
-    t_float mtx2[3][3] = { {1, 0, 0}, {0, 1, 0}, {1, 0, 1} };
-    t_float m1, m2, m3, m4, m5, m6,
-            tx1, ty1, tx2, ty2, t5, t6;
-    t_svg *sa = (t_svg *)x->x_attr;
-    if (!fielddesc_getfloat(&sa->x_bbox, template, data, 0) ||
-        (sa->x_vis.a_flag && !fielddesc_getfloat(&sa->x_vis.a_attr,
-            template, data, 0)))
-    {
-        *xp1 = *yp1 = 0x7fffffff;
-        *xp2 = *yp2 = -0x7fffffff;
-        return;
-    }
+       If the user wants bbox they can add a [draw rect] for an anchor
+       or manual bbox, or they can nest this in a [draw svg] for a viewport.
 
-    svg_groupmtx(sa, template, data, mtx1);
-    width = fielddesc_getcoord(&sa->x_width.a_attr, template, data, 0);
-    height = fielddesc_getcoord(&sa->x_height.a_attr, template, data, 0);
-    xoff = fielddesc_getcoord(&sa->x_x.a_attr, template, data, 0);
-    yoff = fielddesc_getcoord(&sa->x_y.a_attr, template, data, 0);
- 
-    mset(mtx2, xoff, yoff, xoff + width, yoff + height, 0, 0);
-    mtx2[2][0] = 1; mtx2[2][1] = 1;
-    mmult(mtx1, mtx2, mtx2);
-    mget(mtx2, &tx1, &ty1, &tx2, &ty2, &t5, &t6);
-    if (tx1 < x1) x1 = tx1;
-    if (tx2 < x1) x1 = tx2;
-    if (ty1 < y1) y1 = ty1;
-    if (ty2 < y1) y1 = ty2;
-    if (tx1 > x2) x2 = tx1;
-    if (tx2 > x2) x2 = tx2;
-    if (ty1 > y2) y2 = ty1;
-    if (ty2 > y2) y2 = ty2;
-    mset(mtx2, xoff, yoff + height, xoff + width, yoff, 0, 0);
-    mtx2[2][0] = 1; mtx2[2][1] = 1;
-    mmult(mtx1, mtx2, mtx2);
-    mget(mtx2, &tx1, &ty1, &tx2, &ty2, &t5, &t6);
-    if (tx1 < x1) x1 = tx1;
-    if (tx2 < x1) x1 = tx2;
-    if (ty1 < y1) y1 = ty1;
-    if (ty2 < y1) y1 = ty2;
-    if (tx1 > x2) x2 = tx1;
-    if (tx2 > x2) x2 = tx2;
-    if (ty1 > y2) y2 = ty1;
-    if (ty2 > y2) y2 = ty2;
-    //x1 = glist_xtopixels(glist, basex + x1);
-    //x2 = glist_xtopixels(glist, basex + x2);
-    //y1 = glist_ytopixels(glist, basey + y1);
-    //y2 = glist_ytopixels(glist, basey + y2);
-
-    x1 = basex + x1;
-    x2 = basex + x2;
-    y1 = basey + y1;
-    y2 = basey + y2;
-
-    /* todo: put these up top */
-    if (!fielddesc_getfloat(&sa->x_vis.a_attr, template, data, 0))
-    {
-        *xp1 = *yp1 = 0x7fffffff;
-        *xp2 = *yp2 = -0x7fffffff;
-        return;
-    }
-    *xp1 = x1;
-    *yp1 = y1;
-    *xp2 = x2;
-    *yp2 = y2;
+       If users really want a bbox for this in the future we can just use the
+       same expensive algorithm as plot_getrect and suggest nesting in an
+       [draw svg] for performance. But for now I don't think we need that. */
+    *xp1 = *yp1 = 0x7fffffff;
+    *xp2 = *yp2 = -0x7fffffff;
 }
 
 static void drawarray_displace(t_gobj *z, t_glist *glist,
@@ -6930,8 +6908,15 @@ static void drawarray_vis(t_gobj *z, t_glist *glist, t_glist *parentglist,
                 gui_start_vmess("gui_draw_vis", "xs",
                     glist_getcanvas(glist), "g");
                 gui_start_array();
-                gui_s("transform");
-                gui_s(transform_buf);
+                /* For now we're not controlling x/y spacing at all. In the
+                   future we might want to add a method to help define grid
+                   spacing or something, but I can't currently think of a nice
+                   interface for that. (The [plot] object just uses a flag to
+                   reference fields from the element's template, but that is
+                   too complicated and gets in the way of efficient redrawing.
+                */
+                //gui_s("transform");
+                //gui_s(transform_buf);
                 gui_end_array();
                 gui_start_array();
                 gui_s(viewport_tagbuf);
@@ -6947,13 +6932,13 @@ static void drawarray_vis(t_gobj *z, t_glist *glist, t_glist *parentglist,
                         drawarray_groupvis(sc, glist,
                             (t_word *)(elem + elemsize * i),
                         template, (t_glist *)y, 
-                            elemtemplatecanvas, usexloc, useyloc, parentarray);
+                            elemtemplatecanvas, usexloc, useyloc, array);
                     }
                     t_parentwidgetbehavior *wb = pd_getparentwidget(&y->g_pd);
                     if (!wb) continue;
                     (*wb->w_parentvisfn)(y, glist, elemtemplatecanvas, sc,
                         (t_word *)(elem + elemsize * i),
-                            elemtemplate, usexloc, useyloc, parentarray, tovis);
+                            elemtemplate, usexloc, useyloc, array, tovis);
                 }
             }
         }
@@ -6981,7 +6966,7 @@ static void drawarray_vis(t_gobj *z, t_glist *glist, t_glist *parentglist,
                 if (!wb) continue;
                 (*wb->w_parentvisfn)(y, glist, elemtemplatecanvas, sc,
                     (t_word *)(elem + elemsize * i), elemtemplate,
-                        0, 0, parentarray, 0);
+                        0, 0, array, 0);
             }
         }
         /* Now remove our drawarray svg container */
@@ -8084,6 +8069,10 @@ static void *drawimage_new(t_symbol *classsym, int argc, t_atom *argv)
     else svg_attr_setfloat_const(&sa->x_x, 0);
     if (argc) svg_attr_setfloatarg(&sa->x_y, argc--, argv++);
     else svg_attr_setfloat_const(&sa->x_y, 0);
+
+    /* outlet for event notifications */
+    outlet_new(&x->x_obj, &s_anything);
+
     /* [drawimage] allocates memory for an image or image sequence
        while the object is creating. The corresponding scalar gets
        drawn as a canvas image item using the "parent" tk image as
@@ -8142,13 +8131,6 @@ void drawimage_symbol(t_drawimage *x, t_symbol *s)
     drawimage_index(x, 0, 1, at); 
 }
 
-static void drawimage_forward(t_drawimage *x, t_symbol *s, int argc,
-    t_atom *argv)
-{
-    /* forward to t_svg thingy */
-    pd_typedmess(x->x_attr, s, argc, argv);
-}
-
 /* With the current drawimage/sprite implementation we can't easily support
    the x and y attributes. The reason is that we're currently just applying
    attributes to the parent <g> for convenience, but <g> has no x/y atty.
@@ -8172,9 +8154,7 @@ static void drawimage_y(t_drawimage *x, t_symbol *s, int argc,
 static void drawimage_anything(t_drawimage *x, t_symbol *s, int argc,
     t_atom *argv)
 {
-    /* this could be used to just forward all messages to the svg. But
-       since tkpath's pimage only uses the matrix option we just use
-       drawimage_transform above for that. */
+    pd_typedmess(x->x_attr, s, argc, argv);
 }
 
 /* -------------------- widget behavior for drawimage ------------ */
@@ -8519,7 +8499,7 @@ static void drawimage_free(t_drawimage *x)
     //sprintf(buf, ".x%lx", (t_int)x);
     sprintf(buf, "x%lx", (long unsigned int)x);
     pd_unbind(&x->x_obj.ob_pd, gensym(buf));
-    gui_vmess("gui_drawimage_free", "x", x);
+    gui_vmess("gui_image_free", "x", x);
 }
 
 static void drawimage_setup(void)
@@ -8543,17 +8523,11 @@ static void drawimage_setup(void)
         gensym("size"), A_FLOAT, A_FLOAT, 0);
     class_addmethod(drawimage_class, (t_method)drawimage_index,
         gensym("index"), A_GIMME, 0);
-    class_addmethod(drawimage_class, (t_method)drawimage_forward,
-        gensym("transform"), A_GIMME, 0);
-    class_addmethod(drawimage_class, (t_method)drawimage_forward,
-        gensym("vis"), A_GIMME, 0);
-    class_addmethod(drawimage_class, (t_method)drawimage_forward,
-        gensym("bbox"), A_GIMME, 0);
     class_addmethod(drawimage_class, (t_method)drawimage_x,
         gensym("x"), A_GIMME, 0);
     class_addmethod(drawimage_class, (t_method)drawimage_y,
         gensym("y"), A_GIMME, 0);
-    //class_addanything(drawimage_class, drawimage_anything);
+    class_addanything(drawimage_class, drawimage_anything);
     class_setparentwidget(drawimage_class, &drawimage_widgetbehavior);
 }
 

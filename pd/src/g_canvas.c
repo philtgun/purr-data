@@ -742,6 +742,18 @@ void canvas_scalar_event(t_canvas *x, t_symbol *s, int argc, t_atom *argv)
         draw_notify(x, s, argc, argv);
 }
 
+void canvas_show_scrollbars(t_canvas *x, t_floatarg f)
+{
+    x->gl_noscroll = (int)f;
+    if (x->gl_mapped)
+        gui_vmess("gui_canvas_set_scrollbars", "xi", x, (int)f);
+}
+
+void canvas_show_menu(t_canvas *x, t_floatarg f)
+{
+    x->gl_nomenu = (int)f;
+}
+
 extern void canvas_check_nlet_highlights(t_canvas *x);
 
 /*********** dpsaha@vt.edu resize move hooks ****************/
@@ -814,28 +826,29 @@ void canvas_map(t_canvas *x, t_floatarg f)
     t_gobj *y;
     if (flag)
     {
-        t_selection *sel;
-        if (!x->gl_havewindow)
-        {
-            bug("canvas_map");
-            canvas_vis(x, 1);
+        if (!glist_isvisible(x)) {
+            t_selection *sel;
+            if (!x->gl_havewindow)
+            {
+                bug("canvas_map");
+                canvas_vis(x, 1);
+            }
+            if (!x->gl_list) {
+                //if there are no objects on the canvas
+                canvas_create_editor(x);
+            }
+            else for (y = x->gl_list; y; y = y->g_next) {
+                gobj_vis(y, x, 1);
+            }
+            if (x->gl_editor && x->gl_editor->e_selection)
+                for (sel = x->gl_editor->e_selection; sel; sel = sel->sel_next)
+                    gobj_select(sel->sel_what, x, 1);
+            x->gl_mapped = 1;
+            canvas_drawlines(x);
+            if (x->gl_isgraph && x->gl_goprect)
+                canvas_drawredrect(x, 1);
+            scrollbar_update(x);
         }
-
-        if (!x->gl_list) {
-            //if there are no objects on the canvas
-            canvas_create_editor(x);
-        }
-        else for (y = x->gl_list; y; y = y->g_next) {
-            gobj_vis(y, x, 1);
-        }
-        if (x->gl_editor && x->gl_editor->e_selection)
-            for (sel = x->gl_editor->e_selection; sel; sel = sel->sel_next)
-                gobj_select(sel->sel_what, x, 1);
-        x->gl_mapped = 1;
-        canvas_drawlines(x);
-        if (x->gl_isgraph && x->gl_goprect)
-            canvas_drawredrect(x, 1);
-        scrollbar_update(x);
     }
     else
     {
@@ -2579,6 +2592,10 @@ void g_canvas_setup(void)
 
     class_addmethod(canvas_class, (t_method)canvas_scalar_event,
         gensym("scalar_event"), A_GIMME, 0);
+    class_addmethod(canvas_class, (t_method)canvas_show_scrollbars,
+        gensym("scroll"), A_FLOAT, 0);
+    class_addmethod(canvas_class, (t_method)canvas_show_menu,
+        gensym("menu"), A_FLOAT, 0);
 
 /* ---------------------- list handling ------------------------ */
     class_addmethod(canvas_class, (t_method)glist_clear, gensym("clear"),

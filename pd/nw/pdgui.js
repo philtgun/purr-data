@@ -127,6 +127,9 @@ exports.set_font_engine_sanity = function(win) {
         font_engine_sanity = false;
     }
     canvas.parentNode.removeChild(canvas);
+}
+
+exports.get_font_engine_sanity = function() {
     return font_engine_sanity;
 }
 
@@ -991,6 +994,17 @@ function gui_canvas_set_cordinspector(cid, state) {
     patchwin[cid].window.set_cord_inspector_checkbox(state !== 0 ? true : false);
 }
 
+function canvas_set_scrollbars(cid, scroll) {
+    patchwin[cid].window.document.body.style.
+        overflow = scroll ? "visible" : "hidden";
+}
+
+exports.canvas_set_scrollbars = canvas_set_scrollbars;
+
+function gui_canvas_set_scrollbars(cid, no_scrollbars) {
+    canvas_set_scrollbars(cid, no_scrollbars === 0);
+}
+
 exports.menu_send = menu_send;
 
 function gui_set_toplevel_window_list(dummy, attr_array) {
@@ -1198,7 +1212,8 @@ function gui_startup(version, fontname_from_pd, fontweight_from_pd,
     //    } else {
     //        set oldtclversion 0
     //    }
-    pdsend("pd init", enquote(pwd), "0", font_fixed_metrics);
+    pdsend("pd init", enquote(defunkify_windows_path(pwd)), "0",
+        font_fixed_metrics);
 
     //    # add the audio and help menus to the Pd window.  We delayed this
     //    # so that we'd know the value of "apilist".
@@ -1381,7 +1396,7 @@ function create_window(cid, type, width, height, xpos, ypos, attr_array) {
 }
 
 // create a new canvas
-function gui_canvas_new(cid, width, height, geometry, zoom, editmode, name, dir, dirty_flag, cargs) {
+function gui_canvas_new(cid, width, height, geometry, zoom, editmode, name, dir, dirty_flag, hide_scroll, hide_menu, cargs) {
     // hack for buggy tcl popups... should go away for node-webkit
     //reset_ctrl_on_popup_window
 
@@ -1432,7 +1447,8 @@ function gui_canvas_new(cid, width, height, geometry, zoom, editmode, name, dir,
             dirty: dirty_flag,
             args: cargs,
             zoom: zoom,
-            editmode: editmode
+            editmode: editmode,
+            hide_scroll: hide_scroll
     });
 }
 
@@ -2360,9 +2376,12 @@ function gui_text_set (cid, tag, text) {
 }
 
 function gui_text_redraw_border(cid, tag, x1, y1, x2, y2) {
-    var g = get_gobj(cid, tag),
-        b = g.querySelectorAll(".border"),
-        i;
+    var g, b, i;
+    if (!patchwin[cid]) {
+        return;
+    }
+    g = get_gobj(cid, tag);
+    b = g.querySelectorAll(".border");
     for (i = 0; i < b.length; b++) {
         configure_item(b[i], {
             width: x2 - x1,
@@ -2794,8 +2813,14 @@ function gui_radio_button_coords(cid, tag, x1, y1, xi, yi, i, s, d, orient) {
 }
 
 function gui_radio_update(cid, tag, fgcolor, prev, next) {
+    // Make sure that we aren't invoked before the patchwin exists.
+    if (!patchwin[cid]) { return; }
     var prev = get_item(cid, tag + "button_" + prev),
         next = get_item(cid, tag + "button_" + next);
+    // There seems to be a race condition here so that in some rare
+    // circumstances related to gop areas prev/next may not be set yet. Bail
+    // out in that case. This resolves issue #401. -ag
+    if (!prev || !next) { return; }
     configure_item(prev, { display: "none" });
     configure_item(next, {
         display: "inline",
@@ -2933,24 +2958,34 @@ function gui_vumeter_draw_peak(cid,tag,color,p1,p2,p3,p4,width,basex,basey) {
 
 // probably should change tag from "rect" to "cover"
 function gui_vumeter_update_rms(cid, tag, p1, p2, p3, p4, basex, basey) {
-    var rect = get_item(cid, tag + "rect");
-    configure_item(rect, {
-        x: p1 - basex,
-        y: p2 - basey,
-        width: p3 - p1,
-        height: p4 - p2 + 1
-    });
+    var rect;
+    if (patchwin[cid]) {
+        rect = get_item(cid, tag + "rect");
+        if (rect) {
+            configure_item(rect, {
+                x: p1 - basex,
+                y: p2 - basey,
+                width: p3 - p1,
+                height: p4 - p2 + 1
+            });
+        }
+    }
 }
 
 function gui_vumeter_update_peak(cid,tag,color,p1,p2,p3,p4,basex,basey) {
-    var line = get_item(cid, tag + "peak");
-    configure_item(line, {
-        x1: p1 - basex,
-        y1: p2 - basey,
-        x2: p3 - basex,
-        y2: p4 - basey,
-        stroke: color
-    });
+    var line;
+    if (patchwin[cid]) {
+        line = get_item(cid, tag + "peak");
+        if (line) {
+            configure_item(line, {
+                x1: p1 - basex,
+                y1: p2 - basey,
+                x2: p3 - basex,
+                y2: p4 - basey,
+                stroke: color
+            });
+        }
+    }
 }
 
 function gui_iemgui_base_color(cid, tag, color) {
@@ -3595,7 +3630,7 @@ function gui_drawimage_new(obj_tag, file_path, canvasdir, flags) {
     pd_cache.set(obj_tag, drawimage_data); // add the data to container
 }
 
-function gui_drawimage_free(obj_tag) {
+function gui_image_free(obj_tag) {
     var c = pd_cache.get(obj_tag);
     if (c) {
         pd_cache.free(obj_tag); // empty the image(s)
@@ -4018,23 +4053,31 @@ function gui_grid_point(cid, tag, x, y) {
 
 // mknob from moonlib
 function gui_mknob_new(cid, tag, x, y, is_toplevel, show_in, show_out) {
-    var g = gui_gobj_new(cid, tag, "obj", x, y, is_toplevel),
+    var g, border, circle, line;
+    if (!patchwin[cid]) {
+        return;
+    }
+    g = gui_gobj_new(cid, tag, "obj", x, y, is_toplevel),
         border = create_item(cid, "path", {
             class: "border" // now we can inherit the css border styles
-        }),
-        circle = create_item(cid, "circle", {
-            class: "circle"
-        }),
-        line = create_item(cid, "line", {
-            class: "dial"
-        });
+    });
+    circle = create_item(cid, "circle", {
+       class: "circle"
+    });
+    line = create_item(cid, "line", {
+        class: "dial"
+    });
     g.appendChild(border);
     g.appendChild(circle);
     g.appendChild(line);
 }
 
 function gui_configure_mknob(cid, tag, size, bg_color, fg_color) {
-    var g = get_gobj(cid, tag);
+    var g;
+    if (!patchwin[cid]) {
+        return;
+    }
+    g = get_gobj(cid, tag);
     configure_item(g.querySelector(".border"), {
         d: ["M", 0, 0, size, 0,
             "M", 0, size, size, size,
